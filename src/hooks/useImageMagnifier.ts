@@ -1,18 +1,14 @@
-
 'use client';
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useRef, useCallback } from 'react';
+import { useImageLoader } from './useImageLoader';
+import { useVisibility } from './useVisibility';
+import { usePosition } from './usePosition';
+import { useResize } from './useResize';
+import type { Position } from './usePosition';
+import type { ImageSize } from './useResize';
 
-export interface Position {
-  x: number;
-  y: number;
-  mouseX: number;
-  mouseY: number;
-}
-
-export interface ImageSize {
-  width: number;
-  height: number;
-}
+// Re-export types for backward compatibility
+export type { Position, ImageSize };
 
 export interface UseImageMagnifierOptions {
   magnifierSize: number;
@@ -24,7 +20,27 @@ export interface UseImageMagnifierOptions {
   onMagnifierHide?: () => void;
 }
 
-export const useImageMagnifier = (options: UseImageMagnifierOptions) => {
+export interface UseImageMagnifierReturn {
+  isVisible: boolean;
+  imageSize: ImageSize;
+  position: Position;
+  isImageLoaded: boolean;
+  isLoading: boolean;
+  hasError: boolean;
+  imageRef: React.RefObject<HTMLImageElement>;
+  containerRef: React.RefObject<HTMLDivElement>;
+  showMagnifier: (e: React.MouseEvent | React.TouchEvent) => void;
+  hideMagnifier: () => void;
+  updatePosition: (e: React.MouseEvent | React.TouchEvent) => void;
+  handleImageLoad: () => void;
+  handleImageError: () => void;
+}
+
+/**
+ * Orchestration hook that composes focused hooks for image magnifier functionality
+ * Maintains backward compatibility while following Single Responsibility Principle
+ */
+export const useImageMagnifier = (options: UseImageMagnifierOptions): UseImageMagnifierReturn => {
   const {
     magnifierSize,
     zoomLevel,
@@ -35,109 +51,67 @@ export const useImageMagnifier = (options: UseImageMagnifierOptions) => {
     onMagnifierHide,
   } = options;
 
-  const [isVisible, setIsVisible] = useState(false);
-  const [imageSize, setImageSize] = useState<ImageSize>({ width: 0, height: 0 });
-  const [position, setPosition] = useState<Position>({ x: 0, y: 0, mouseX: 0, mouseY: 0 });
-  const [isImageLoaded, setIsImageLoaded] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
-  const [hasError, setHasError] = useState(false);
-  
+  // Refs
   const imageRef = useRef<HTMLImageElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const animationFrameRef = useRef<number | null>(null);
-  const lastUpdateTime = useRef<number>(0);
 
-  const updateImageSize = useCallback(() => {
-    if (imageRef.current) {
-      const { width, height } = imageRef.current.getBoundingClientRect();
-      setImageSize({ width, height });
-    }
-  }, []);
+  // Compose hooks for image loading state
+  // Pass imageRef to check for cached images (fixes Next.js 14 hydration issue)
+  const {
+    isLoading,
+    hasError,
+    isImageLoaded,
+    handleImageLoad: onImageLoad,
+    handleImageError,
+  } = useImageLoader({ imageRef });
 
-  const updatePosition = useCallback((e: React.MouseEvent | React.TouchEvent) => {
-    if (!containerRef.current || disabled) return;
+  // Compose hooks for resize handling
+  const { imageSize, updateImageSize } = useResize({
+    imageRef,
+    enabled: isImageLoaded,
+  });
 
-    const currentTime = performance.now();
-    if (performanceMode && currentTime - lastUpdateTime.current < 16) return; // 60fps throttle
-    
-    lastUpdateTime.current = currentTime;
+  // Compose hooks for visibility
+  const { isVisible, show, hide } = useVisibility({
+    disabled,
+    onShow: onMagnifierShow,
+    onHide: onMagnifierHide,
+  });
 
-    const rect = containerRef.current.getBoundingClientRect();
-    const clientX = 'touches' in e ? e.touches[0]?.clientX || 0 : (e as React.MouseEvent).clientX;
-    const clientY = 'touches' in e ? e.touches[0]?.clientY || 0 : (e as React.MouseEvent).clientY;
-    
-    const x = clientX - rect.left;
-    const y = clientY - rect.top;
-    
-    // Keep magnifier within bounds
-    const halfSize = magnifierSize / 2;
-    const clampedX = Math.max(halfSize, Math.min(x, rect.width - halfSize));
-    const clampedY = Math.max(halfSize, Math.min(y, rect.height - halfSize));
-    
-    const newPosition = {
-      x: -x * zoomLevel + halfSize,
-      y: -y * zoomLevel + halfSize,
-      mouseX: clampedX - halfSize,
-      mouseY: clampedY - halfSize,
-    };
+  // Compose hooks for position
+  const { position, updatePosition, resetPosition } = usePosition({
+    magnifierSize,
+    zoomLevel,
+    disabled,
+    smoothAnimations,
+    performanceMode,
+    containerRef,
+  });
 
-    if (smoothAnimations && !performanceMode) {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
-      animationFrameRef.current = requestAnimationFrame(() => {
-        setPosition(newPosition);
-      });
-    } else {
-      setPosition(newPosition);
-    }
-  }, [magnifierSize, zoomLevel, disabled, smoothAnimations, performanceMode]);
-
-  const showMagnifier = useCallback((e: React.MouseEvent | React.TouchEvent) => {
-    if (disabled || !isImageLoaded) return;
-    
+  // Handle image load with size update
+  const handleImageLoad = useCallback(() => {
+    onImageLoad();
     updateImageSize();
-    setIsVisible(true);
-    updatePosition(e);
-    onMagnifierShow?.();
-  }, [disabled, isImageLoaded, updateImageSize, updatePosition, onMagnifierShow]);
+  }, [onImageLoad, updateImageSize]);
 
+  // Show magnifier with position update
+  const showMagnifier = useCallback(
+    (e: React.MouseEvent | React.TouchEvent) => {
+      if (disabled || !isImageLoaded) return;
+
+      updateImageSize();
+      show();
+      updatePosition(e);
+    },
+    [disabled, isImageLoaded, updateImageSize, show, updatePosition]
+  );
+
+  // Hide magnifier with position reset
   const hideMagnifier = useCallback(() => {
     if (disabled) return;
-    
-    setIsVisible(false);
-    onMagnifierHide?.();
-    
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
-    }
-  }, [disabled, onMagnifierHide]);
-
-  const handleImageLoad = useCallback(() => {
-    setIsImageLoaded(true);
-    setIsLoading(false);
-    setHasError(false);
-    updateImageSize();
-  }, [updateImageSize]);
-
-  const handleImageError = useCallback(() => {
-    setIsImageLoaded(false);
-    setIsLoading(false);
-    setHasError(true);
-  }, []);
-
-  useEffect(() => {
-    if (isImageLoaded) {
-      const handleResize = () => updateImageSize();
-      window.addEventListener('resize', handleResize);
-      return () => {
-        window.removeEventListener('resize', handleResize);
-        if (animationFrameRef.current) {
-          cancelAnimationFrame(animationFrameRef.current);
-        }
-      };
-    }
-  }, [isImageLoaded, updateImageSize]);
+    hide();
+    resetPosition();
+  }, [disabled, hide, resetPosition]);
 
   return {
     isVisible,
