@@ -30,7 +30,10 @@ export const useResize = (options: UseResizeOptions): UseResizeReturn => {
   const updateImageSize = useCallback(() => {
     if (imageRef.current) {
       const { width, height } = imageRef.current.getBoundingClientRect();
-      setImageSize({ width, height });
+      // Only update if we have valid dimensions (not the hidden preload image)
+      if (width > 0 && height > 0) {
+        setImageSize({ width, height });
+      }
     }
   }, [imageRef]);
 
@@ -40,11 +43,26 @@ export const useResize = (options: UseResizeOptions): UseResizeReturn => {
     const handleResize = () => updateImageSize();
     window.addEventListener('resize', handleResize);
 
-    // Initial size update
-    updateImageSize();
+    // Use double requestAnimationFrame to ensure React has re-rendered
+    // and the ref points to the visible image (not the hidden preload image)
+    // This fixes the issue where getBoundingClientRect returns 0x0
+    let rafId1: number;
+    let rafId2: number;
+
+    const scheduleUpdate = () => {
+      rafId1 = requestAnimationFrame(() => {
+        rafId2 = requestAnimationFrame(() => {
+          updateImageSize();
+        });
+      });
+    };
+
+    scheduleUpdate();
 
     return () => {
       window.removeEventListener('resize', handleResize);
+      cancelAnimationFrame(rafId1);
+      cancelAnimationFrame(rafId2);
     };
   }, [enabled, updateImageSize]);
 

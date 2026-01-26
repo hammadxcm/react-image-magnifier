@@ -1,5 +1,5 @@
 'use client';
-import { useRef, useCallback } from 'react';
+import { useRef, useCallback, useEffect } from 'react';
 import { useImageLoader } from './useImageLoader';
 import { useVisibility } from './useVisibility';
 import { usePosition } from './usePosition';
@@ -93,6 +93,29 @@ export const useImageMagnifier = (options: UseImageMagnifierOptions): UseImageMa
     onImageLoad();
     updateImageSize();
   }, [onImageLoad, updateImageSize]);
+
+  // Ensure image size is recalculated after DOM updates when image loads
+  // This fixes the issue where the size is 0 because the visible image
+  // wasn't in the DOM yet when updateImageSize was first called
+  useEffect(() => {
+    if (isImageLoaded && imageRef.current) {
+      // Retry updating image size with increasing delays to handle
+      // cases where React re-render + browser paint takes longer
+      const retryDelays = [0, 16, 50, 100]; // ms delays
+      const timeoutIds: number[] = [];
+
+      retryDelays.forEach((delay) => {
+        const timeoutId = window.setTimeout(() => {
+          updateImageSize();
+        }, delay);
+        timeoutIds.push(timeoutId);
+      });
+
+      return () => {
+        timeoutIds.forEach((id) => clearTimeout(id));
+      };
+    }
+  }, [isImageLoaded, updateImageSize]);
 
   // Show magnifier with position update
   const showMagnifier = useCallback(
